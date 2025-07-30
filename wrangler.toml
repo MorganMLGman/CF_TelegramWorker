@@ -6,3 +6,6 @@ compatibility_date = "2025-07-30"
 # TELEGRAM_CHAT_ID = "your_chat_id_here"
 
 [vars]
+
+[observability.logs]
+enabled = true
