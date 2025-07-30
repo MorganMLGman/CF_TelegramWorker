@@ -89,7 +89,19 @@ function formatAlarmMessage(alarmData) {
 }
 
 async function sendToTelegram(message, env) {
+  // Check if required environment variables are set
+  if (!env.TELEGRAM_BOT_TOKEN) {
+    console.error('TELEGRAM_BOT_TOKEN environment variable is not set');
+    throw new Error('TELEGRAM_BOT_TOKEN not configured');
+  }
+  
+  if (!env.TELEGRAM_CHAT_ID) {
+    console.error('TELEGRAM_CHAT_ID environment variable is not set');
+    throw new Error('TELEGRAM_CHAT_ID not configured');
+  }
+  
   const telegramUrl = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+  console.log('Sending to Telegram URL:', telegramUrl.replace(env.TELEGRAM_BOT_TOKEN, '[HIDDEN]'));
   
   const payload = {
     chat_id: env.TELEGRAM_CHAT_ID,
@@ -97,6 +109,11 @@ async function sendToTelegram(message, env) {
     parse_mode: 'Markdown',
     disable_web_page_preview: true
   };
+  
+  console.log('Telegram payload:', JSON.stringify({
+    ...payload,
+    chat_id: '[HIDDEN]'
+  }, null, 2));
   
   return fetch(telegramUrl, {
     method: 'POST',
