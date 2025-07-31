@@ -1,9 +1,16 @@
 // Cloudflare Worker - OCI Alarm to Telegram forwarder
 export default {
   async fetch(request, env, ctx) {
+    // Log all incoming requests for debugging
+    console.log('=== Incoming Request ===');
+    console.log('Method:', request.method);
+    console.log('URL:', request.url);
+    console.log('Headers:', JSON.stringify([...request.headers.entries()], null, 2));
+    
     // Handle both GET and POST requests
     if (request.method === 'GET') {
       // Oracle Cloud might send GET request for health check
+      console.log('Responding to GET request with health check');
       return new Response('Oracle Cloud Infrastructure Webhook Endpoint - Ready', { status: 200 });
     }
     
@@ -14,8 +21,15 @@ export default {
     try {
       // Get raw request body first
       const rawBody = await request.text();
+      console.log('=== Request Body Analysis ===');
       console.log('Received raw body (first 500 chars):', rawBody.substring(0, 500));
       console.log('Body length:', rawBody.length);
+      
+      // Check if body is empty
+      if (!rawBody || rawBody.trim().length === 0) {
+        console.log('Empty request body received');
+        return new Response('Empty request body', { status: 400 });
+      }
       
       // Log the problematic section if the body is long enough
       if (rawBody.length > 1220) {
@@ -50,37 +64,69 @@ export default {
         }
       }
       
+      console.log('=== Parsed Data Analysis ===');
       console.log('Parsed alarm data:', JSON.stringify(alarmData, null, 2));
+      
+      // Log all keys in the received data
+      if (alarmData && typeof alarmData === 'object') {
+        console.log('Data keys:', Object.keys(alarmData));
+        console.log('Event type (if any):', alarmData.eventType);
+        console.log('Type field (if any):', alarmData.type);
+      }
 
       // Check if this is a subscription confirmation request from Oracle
-      if (alarmData && alarmData.eventType === 'com.oraclecloud.ons.subscriptionconfirmation') {
-        console.log('Received Oracle Cloud subscription confirmation request');
+      // Oracle can use different field names for event type
+      const isConfirmationRequest = alarmData && (
+        alarmData.eventType === 'com.oraclecloud.ons.subscriptionconfirmation' ||
+        alarmData.eventType === 'subscriptionconfirmation' ||
+        alarmData.type === 'subscriptionconfirmation' ||
+        alarmData.confirmationUrl
+      );
+      
+      if (isConfirmationRequest) {
+        console.log('=== ORACLE SUBSCRIPTION CONFIRMATION DETECTED ===');
+        console.log('Event type:', alarmData.eventType);
+        console.log('Type:', alarmData.type);
+        console.log('Full confirmation data:', JSON.stringify(alarmData, null, 2));
         
-        // Oracle expects us to make a GET request to the confirmationUrl
-        if (alarmData.confirmationUrl) {
-          console.log('Confirming subscription at:', alarmData.confirmationUrl);
+        // Look for confirmation URL in different possible fields
+        const confirmationUrl = alarmData.confirmationUrl || 
+                               alarmData['confirmation-url'] || 
+                               alarmData.confirmUrl ||
+                               alarmData['confirm-url'];
+        
+        if (confirmationUrl) {
+          console.log('Found confirmation URL:', confirmationUrl);
           
           try {
-            const confirmResponse = await fetch(alarmData.confirmationUrl, {
+            console.log('Making confirmation request...');
+            const confirmResponse = await fetch(confirmationUrl, {
               method: 'GET',
               headers: {
-                'User-Agent': 'CloudflareWorker/1.0'
+                'User-Agent': 'CloudflareWorker/1.0',
+                'Accept': '*/*'
               }
             });
             
+            const responseText = await confirmResponse.text();
+            console.log('Confirmation response status:', confirmResponse.status);
+            console.log('Confirmation response headers:', JSON.stringify([...confirmResponse.headers.entries()], null, 2));
+            console.log('Confirmation response body:', responseText);
+            
             if (confirmResponse.ok) {
-              console.log('Successfully confirmed Oracle Cloud subscription');
+              console.log('✅ Successfully confirmed Oracle Cloud subscription');
               return new Response('Subscription confirmed successfully', { status: 200 });
             } else {
-              console.error('Failed to confirm subscription:', confirmResponse.status, await confirmResponse.text());
+              console.error('❌ Failed to confirm subscription:', confirmResponse.status, responseText);
               return new Response('Failed to confirm subscription', { status: 500 });
             }
           } catch (confirmError) {
-            console.error('Error confirming subscription:', confirmError);
+            console.error('❌ Error confirming subscription:', confirmError);
             return new Response('Error confirming subscription', { status: 500 });
           }
         } else {
-          console.error('No confirmationUrl provided in subscription confirmation request');
+          console.error('❌ No confirmationUrl found in subscription confirmation request');
+          console.log('Available fields:', Object.keys(alarmData));
           return new Response('No confirmation URL provided', { status: 400 });
         }
       }
