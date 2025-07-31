@@ -67,6 +67,30 @@ function formatAlarmMessage(alarmData) {
     if (alarmData.alarmMetaData && alarmData.alarmMetaData.length > 0) {
       const alarmMeta = alarmData.alarmMetaData[0];
       
+      // Add resource information
+      if (alarmMeta.dimensions && alarmMeta.dimensions.length > 0) {
+        const dimension = alarmMeta.dimensions[0];
+        if (dimension.resourceDisplayName) {
+          message += `*Resource:* ${dimension.resourceDisplayName}\n`;
+        }
+        if (dimension.shape) {
+          message += `*Instance Type:* ${dimension.shape}\n`;
+        }
+        if (dimension.availabilityDomain) {
+          message += `*Region:* ${dimension.region || 'Unknown'}\n`;
+        }
+      }
+      
+      // Add metric values
+      if (alarmMeta.metricValues && alarmMeta.metricValues.length > 0) {
+        const metrics = alarmMeta.metricValues[0];
+        Object.keys(metrics).forEach(key => {
+          const value = parseFloat(metrics[key]);
+          const metricName = key.includes('Cpu') ? 'CPU Usage' : key;
+          message += `*${metricName}:* ${value.toFixed(1)}%\n`;
+        });
+      }
+      
       if (alarmMeta.alarmSummary) {
         let summary = alarmMeta.alarmSummary;
         if (summary.length > 200) {
