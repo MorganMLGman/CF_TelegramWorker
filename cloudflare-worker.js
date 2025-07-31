@@ -1,7 +1,12 @@
 // Cloudflare Worker - OCI Alarm to Telegram forwarder
 export default {
   async fetch(request, env, ctx) {
-    // Only handle POST requests
+    // Handle both GET and POST requests
+    if (request.method === 'GET') {
+      // Oracle Cloud might send GET request for health check
+      return new Response('Oracle Cloud Infrastructure Webhook Endpoint - Ready', { status: 200 });
+    }
+    
     if (request.method !== 'POST') {
       return new Response('Method not allowed', { status: 405 });
     }
@@ -47,7 +52,40 @@ export default {
       
       console.log('Parsed alarm data:', JSON.stringify(alarmData, null, 2));
 
-      // Format message for Telegram
+      // Check if this is a subscription confirmation request from Oracle
+      if (alarmData && alarmData.eventType === 'com.oraclecloud.ons.subscriptionconfirmation') {
+        console.log('Received Oracle Cloud subscription confirmation request');
+        
+        // Oracle expects us to make a GET request to the confirmationUrl
+        if (alarmData.confirmationUrl) {
+          console.log('Confirming subscription at:', alarmData.confirmationUrl);
+          
+          try {
+            const confirmResponse = await fetch(alarmData.confirmationUrl, {
+              method: 'GET',
+              headers: {
+                'User-Agent': 'CloudflareWorker/1.0'
+              }
+            });
+            
+            if (confirmResponse.ok) {
+              console.log('Successfully confirmed Oracle Cloud subscription');
+              return new Response('Subscription confirmed successfully', { status: 200 });
+            } else {
+              console.error('Failed to confirm subscription:', confirmResponse.status, await confirmResponse.text());
+              return new Response('Failed to confirm subscription', { status: 500 });
+            }
+          } catch (confirmError) {
+            console.error('Error confirming subscription:', confirmError);
+            return new Response('Error confirming subscription', { status: 500 });
+          }
+        } else {
+          console.error('No confirmationUrl provided in subscription confirmation request');
+          return new Response('No confirmation URL provided', { status: 400 });
+        }
+      }
+
+      // Handle regular alarm notifications
       const message = formatAlarmMessage(alarmData);
 
       // Send to Telegram
