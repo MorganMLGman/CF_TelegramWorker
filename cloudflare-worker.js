@@ -75,25 +75,36 @@ export default {
       }
 
       // Check if this is a subscription confirmation request from Oracle
-      // Oracle can use different field names for event type
-      const isConfirmationRequest = alarmData && (
-        alarmData.eventType === 'com.oraclecloud.ons.subscriptionconfirmation' ||
-        alarmData.eventType === 'subscriptionconfirmation' ||
-        alarmData.type === 'subscriptionconfirmation' ||
-        alarmData.confirmationUrl
-      );
+      // Oracle uses headers to indicate confirmation requests
+      const messageType = request.headers.get('x-oci-ns-messagetype');
+      const confirmationUrlHeader = request.headers.get('x-oci-ns-confirmationurl');
+      
+      console.log('Oracle message type header:', messageType);
+      console.log('Oracle confirmation URL header:', confirmationUrlHeader);
+      
+      const isConfirmationRequest = messageType === 'SubscriptionConfirmation' || 
+                                  confirmationUrlHeader ||
+                                  (alarmData && (
+                                    alarmData.eventType === 'com.oraclecloud.ons.subscriptionconfirmation' ||
+                                    alarmData.eventType === 'subscriptionconfirmation' ||
+                                    alarmData.type === 'subscriptionconfirmation' ||
+                                    alarmData.ConfirmationURL ||
+                                    alarmData.confirmationUrl
+                                  ));
       
       if (isConfirmationRequest) {
         console.log('=== ORACLE SUBSCRIPTION CONFIRMATION DETECTED ===');
-        console.log('Event type:', alarmData.eventType);
-        console.log('Type:', alarmData.type);
+        console.log('Message type header:', messageType);
+        console.log('Confirmation URL header:', confirmationUrlHeader);
         console.log('Full confirmation data:', JSON.stringify(alarmData, null, 2));
         
-        // Look for confirmation URL in different possible fields
-        const confirmationUrl = alarmData.confirmationUrl || 
-                               alarmData['confirmation-url'] || 
-                               alarmData.confirmUrl ||
-                               alarmData['confirm-url'];
+        // Look for confirmation URL in headers first, then in body
+        const confirmationUrl = confirmationUrlHeader ||
+                               alarmData?.ConfirmationURL ||
+                               alarmData?.confirmationUrl || 
+                               alarmData?.['confirmation-url'] || 
+                               alarmData?.confirmUrl ||
+                               alarmData?.['confirm-url'];
         
         if (confirmationUrl) {
           console.log('Found confirmation URL:', confirmationUrl);
@@ -126,7 +137,8 @@ export default {
           }
         } else {
           console.error('❌ No confirmationUrl found in subscription confirmation request');
-          console.log('Available fields:', Object.keys(alarmData));
+          console.log('Available body fields:', Object.keys(alarmData || {}));
+          console.log('Available headers:', JSON.stringify([...request.headers.entries()], null, 2));
           return new Response('No confirmation URL provided', { status: 400 });
         }
       }
