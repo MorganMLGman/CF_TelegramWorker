@@ -12,6 +12,11 @@ export default {
       console.log('Received raw body (first 500 chars):', rawBody.substring(0, 500));
       console.log('Body length:', rawBody.length);
       
+      // Log the problematic section if the body is long enough
+      if (rawBody.length > 1220) {
+        console.log('JSON around position 1200-1220:', rawBody.substring(1190, 1230));
+      }
+      
       // Try to parse JSON
       let alarmData;
       try {
@@ -19,7 +24,25 @@ export default {
       } catch (jsonError) {
         console.error('JSON parsing error:', jsonError.message);
         console.error('Invalid JSON around position 1200-1220:', rawBody.substring(1190, 1230));
-        return new Response(`Invalid JSON: ${jsonError.message}`, { status: 400 });
+        
+        // Try to fix common JSON issues from Oracle Cloud
+        console.log('Attempting to fix malformed JSON...');
+        let fixedBody = rawBody;
+        
+        // Fix unescaped quotes in string values (common Oracle Cloud issue)
+        // This regex finds: "key":"value with "unescaped" quotes"
+        fixedBody = fixedBody.replace(/(":\s*")([^"]*)"([^"]*)"([^"]*?)(")/g, '$1$2\\"$3\\"$4$5');
+        
+        // Additional fix for quotes in alarm summaries specifically
+        fixedBody = fixedBody.replace(/("alarmSummary":\s*")([^"]*?)"([^"]*?)"([^"]*?)(")/g, '$1$2\\"$3\\"$4$5');
+        
+        try {
+          alarmData = JSON.parse(fixedBody);
+          console.log('Successfully fixed and parsed JSON');
+        } catch (secondError) {
+          console.error('Failed to fix JSON:', secondError.message);
+          return new Response(`Invalid JSON that cannot be fixed: ${jsonError.message}`, { status: 400 });
+        }
       }
       
       console.log('Parsed alarm data:', JSON.stringify(alarmData, null, 2));
