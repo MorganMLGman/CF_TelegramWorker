@@ -1,16 +1,8 @@
 // Cloudflare Worker - OCI Alarm to Telegram forwarder
 export default {
   async fetch(request, env, ctx) {
-    // Log all incoming requests for debugging
-    console.log('=== Incoming Request ===');
-    console.log('Method:', request.method);
-    console.log('URL:', request.url);
-    console.log('Headers:', JSON.stringify([...request.headers.entries()], null, 2));
-    
-    // Handle both GET and POST requests
+    // Handle GET requests for health checks
     if (request.method === 'GET') {
-      // Oracle Cloud might send GET request for health check
-      console.log('Responding to GET request with health check');
       return new Response('Oracle Cloud Infrastructure Webhook Endpoint - Ready', { status: 200 });
     }
     
@@ -19,140 +11,74 @@ export default {
     }
 
     try {
-      // Get raw request body first
       const rawBody = await request.text();
-      console.log('=== Request Body Analysis ===');
-      console.log('Received raw body (first 500 chars):', rawBody.substring(0, 500));
-      console.log('Body length:', rawBody.length);
       
-      // Check if body is empty
       if (!rawBody || rawBody.trim().length === 0) {
-        console.log('Empty request body received');
         return new Response('Empty request body', { status: 400 });
       }
       
-      // Log the problematic section if the body is long enough
-      if (rawBody.length > 1220) {
-        console.log('JSON around position 1200-1220:', rawBody.substring(1190, 1230));
-      }
-      
-      // Try to parse JSON
+      // Parse JSON with error handling for Oracle Cloud formatting issues
       let alarmData;
       try {
         alarmData = JSON.parse(rawBody);
       } catch (jsonError) {
-        console.error('JSON parsing error:', jsonError.message);
-        console.error('Invalid JSON around position 1200-1220:', rawBody.substring(1190, 1230));
-        
-        // Try to fix common JSON issues from Oracle Cloud
-        console.log('Attempting to fix malformed JSON...');
+        // Try to fix common JSON issues from Oracle Cloud (unescaped quotes)
         let fixedBody = rawBody;
-        
-        // Fix unescaped quotes in string values (common Oracle Cloud issue)
-        // This regex finds: "key":"value with "unescaped" quotes"
         fixedBody = fixedBody.replace(/(":\s*")([^"]*)"([^"]*)"([^"]*?)(")/g, '$1$2\\"$3\\"$4$5');
-        
-        // Additional fix for quotes in alarm summaries specifically
         fixedBody = fixedBody.replace(/("alarmSummary":\s*")([^"]*?)"([^"]*?)"([^"]*?)(")/g, '$1$2\\"$3\\"$4$5');
         
         try {
           alarmData = JSON.parse(fixedBody);
-          console.log('Successfully fixed and parsed JSON');
         } catch (secondError) {
-          console.error('Failed to fix JSON:', secondError.message);
-          return new Response(`Invalid JSON that cannot be fixed: ${jsonError.message}`, { status: 400 });
+          return new Response(`Invalid JSON: ${jsonError.message}`, { status: 400 });
         }
       }
       
-      console.log('=== Parsed Data Analysis ===');
-      console.log('Parsed alarm data:', JSON.stringify(alarmData, null, 2));
-      
-      // Log all keys in the received data
-      if (alarmData && typeof alarmData === 'object') {
-        console.log('Data keys:', Object.keys(alarmData));
-        console.log('Event type (if any):', alarmData.eventType);
-        console.log('Type field (if any):', alarmData.type);
-      }
-
-      // Check if this is a subscription confirmation request from Oracle
-      // Oracle uses headers to indicate confirmation requests
+      // Check for Oracle Cloud subscription confirmation
       const messageType = request.headers.get('x-oci-ns-messagetype');
       const confirmationUrlHeader = request.headers.get('x-oci-ns-confirmationurl');
-      
-      console.log('Oracle message type header:', messageType);
-      console.log('Oracle confirmation URL header:', confirmationUrlHeader);
       
       const isConfirmationRequest = messageType === 'SubscriptionConfirmation' || 
                                   confirmationUrlHeader ||
                                   (alarmData && (
                                     alarmData.eventType === 'com.oraclecloud.ons.subscriptionconfirmation' ||
-                                    alarmData.eventType === 'subscriptionconfirmation' ||
-                                    alarmData.type === 'subscriptionconfirmation' ||
                                     alarmData.ConfirmationURL ||
                                     alarmData.confirmationUrl
                                   ));
       
       if (isConfirmationRequest) {
-        console.log('=== ORACLE SUBSCRIPTION CONFIRMATION DETECTED ===');
-        console.log('Message type header:', messageType);
-        console.log('Confirmation URL header:', confirmationUrlHeader);
-        console.log('Full confirmation data:', JSON.stringify(alarmData, null, 2));
-        
-        // Look for confirmation URL in headers first, then in body
         const confirmationUrl = confirmationUrlHeader ||
                                alarmData?.ConfirmationURL ||
-                               alarmData?.confirmationUrl || 
-                               alarmData?.['confirmation-url'] || 
-                               alarmData?.confirmUrl ||
-                               alarmData?.['confirm-url'];
+                               alarmData?.confirmationUrl;
         
         if (confirmationUrl) {
-          console.log('Found confirmation URL:', confirmationUrl);
-          
-          try {
-            console.log('Making confirmation request...');
-            const confirmResponse = await fetch(confirmationUrl, {
-              method: 'GET',
-              headers: {
-                'User-Agent': 'CloudflareWorker/1.0',
-                'Accept': '*/*'
-              }
-            });
-            
-            const responseText = await confirmResponse.text();
-            console.log('Confirmation response status:', confirmResponse.status);
-            console.log('Confirmation response headers:', JSON.stringify([...confirmResponse.headers.entries()], null, 2));
-            console.log('Confirmation response body:', responseText);
-            
-            if (confirmResponse.ok) {
-              console.log('✅ Successfully confirmed Oracle Cloud subscription');
-              return new Response('Subscription confirmed successfully', { status: 200 });
-            } else {
-              console.error('❌ Failed to confirm subscription:', confirmResponse.status, responseText);
-              return new Response('Failed to confirm subscription', { status: 500 });
+          const confirmResponse = await fetch(confirmationUrl, {
+            method: 'GET',
+            headers: {
+              'User-Agent': 'CloudflareWorker/1.0',
+              'Accept': '*/*'
             }
-          } catch (confirmError) {
-            console.error('❌ Error confirming subscription:', confirmError);
-            return new Response('Error confirming subscription', { status: 500 });
+          });
+          
+          if (confirmResponse.ok) {
+            return new Response('Subscription confirmed successfully', { status: 200 });
+          } else {
+            return new Response('Failed to confirm subscription', { status: 500 });
           }
         } else {
-          console.error('❌ No confirmationUrl found in subscription confirmation request');
-          console.log('Available body fields:', Object.keys(alarmData || {}));
-          console.log('Available headers:', JSON.stringify([...request.headers.entries()], null, 2));
           return new Response('No confirmation URL provided', { status: 400 });
         }
       }
 
       // Handle regular alarm notifications
       const message = formatAlarmMessage(alarmData);
-
-      // Send to Telegram
       const telegramResponse = await sendToTelegram(message, env);
       
       if (telegramResponse.ok) {
         return new Response('Message sent successfully', { status: 200 });
       } else {
-        console.error('Telegram API error:', await telegramResponse.text());
+        const error = await telegramResponse.text();
+        console.error('Telegram API error:', error);
         return new Response('Failed to send message', { status: 500 });
       }
 
@@ -165,8 +91,6 @@ export default {
 
 function formatAlarmMessage(alarmData) {
   try {
-    console.log('Formatting message for alarm data keys:', Object.keys(alarmData || {}));
-    
     // Determine status and emoji
     const status = alarmData?.type || 'UNKNOWN';
     let emoji = 'ℹ️';
@@ -183,91 +107,71 @@ function formatAlarmMessage(alarmData) {
     // Build message
     let message = `${emoji} *Oracle VM Alert*\n\n`;
     message += `*Status:* ${statusText}\n`;
+    message += `*Severity:* ${alarmData?.severity || 'INFO'}\n`;
+    message += `*Time:* ${alarmData?.timestamp || 'Unknown time'}\n`;
     
-    // Add severity
-    const severity = alarmData?.severity || 'INFO';
-    message += `*Severity:* ${severity}\n`;
-    
-    // Add timestamp
-    const timestamp = alarmData?.timestamp || 'Unknown time';
-    message += `*Time:* ${timestamp}\n`;
-    
-    // Add title
     if (alarmData?.title) {
       message += `*Alert:* ${alarmData.title}\n`;
     }
     
-    // Add alarm details from metadata
-    if (alarmData?.alarmMetaData && Array.isArray(alarmData.alarmMetaData) && alarmData.alarmMetaData.length > 0) {
-      const alarmMeta = alarmData.alarmMetaData[0];
-      
-      // Add resource information
-      if (alarmMeta?.dimensions && Array.isArray(alarmMeta.dimensions) && alarmMeta.dimensions.length > 0) {
-        const dimension = alarmMeta.dimensions[0];
-        if (dimension?.resourceDisplayName) {
-          message += `*Resource:* ${dimension.resourceDisplayName}\n`;
-        }
-        if (dimension?.shape) {
-          message += `*Instance Type:* ${dimension.shape}\n`;
-        }
-        if (dimension?.region) {
-          message += `*Region:* ${dimension.region}\n`;
-        }
+    // Add resource information
+    if (alarmData?.alarmMetaData?.[0]?.dimensions?.[0]) {
+      const dimension = alarmData.alarmMetaData[0].dimensions[0];
+      if (dimension.resourceDisplayName) {
+        message += `*Resource:* ${dimension.resourceDisplayName}\n`;
       }
-      
-      // Add metric values
-      if (alarmMeta?.metricValues && Array.isArray(alarmMeta.metricValues) && alarmMeta.metricValues.length > 0) {
-        const metrics = alarmMeta.metricValues[0];
-        if (metrics && typeof metrics === 'object') {
-          Object.keys(metrics).forEach(key => {
-            try {
-              const value = parseFloat(metrics[key]);
-              if (!isNaN(value)) {
-                const metricName = key.includes('Cpu') ? 'CPU Usage' : key;
-                message += `*${metricName}:* ${value.toFixed(1)}%\n`;
-              }
-            } catch (e) {
-              console.warn('Error parsing metric value:', key, metrics[key]);
-            }
-          });
+      if (dimension.shape) {
+        message += `*Instance Type:* ${dimension.shape}\n`;
+      }
+      if (dimension.region) {
+        message += `*Region:* ${dimension.region}\n`;
+      }
+    }
+    
+    // Add metric values
+    if (alarmData?.alarmMetaData?.[0]?.metricValues?.[0]) {
+      const metrics = alarmData.alarmMetaData[0].metricValues[0];
+      Object.keys(metrics).forEach(key => {
+        const value = parseFloat(metrics[key]);
+        if (!isNaN(value)) {
+          const metricName = key.includes('Cpu') ? 'CPU Usage' : key;
+          message += `*${metricName}:* ${value.toFixed(1)}%\n`;
         }
+      });
+    }
+    
+    // Add alarm summary
+    if (alarmData?.alarmMetaData?.[0]?.alarmSummary) {
+      let summary = alarmData.alarmMetaData[0].alarmSummary;
+      if (summary.length > 200) {
+        summary = summary.substring(0, 200) + '...';
       }
-      
-      if (alarmMeta?.alarmSummary) {
-        let summary = alarmMeta.alarmSummary;
-        if (summary.length > 200) {
-          summary = summary.substring(0, 200) + '...';
-        }
-        message += `*Details:* ${summary}\n`;
-      }
-      
-      if (alarmMeta?.alarmUrl) {
-        message += `[View in Console](${alarmMeta.alarmUrl})\n`;
-      }
+      message += `*Details:* ${summary}\n`;
+    }
+    
+    // Add console link
+    if (alarmData?.alarmMetaData?.[0]?.alarmUrl) {
+      message += `[View in Console](${alarmData.alarmMetaData[0].alarmUrl})\n`;
     }
     
     return message;
     
   } catch (error) {
     console.error('Error formatting message:', error);
-    return `🚨 *Oracle VM Alert*\n\nReceived alarm but failed to parse details.\nError: ${error.message}\nRaw: ${JSON.stringify(alarmData).substring(0, 300)}...`;
+    return `🚨 *Oracle VM Alert*\n\nReceived alarm but failed to parse details.\nError: ${error.message}`;
   }
 }
 
 async function sendToTelegram(message, env) {
-  // Check if required environment variables are set
   if (!env.TELEGRAM_BOT_TOKEN) {
-    console.error('TELEGRAM_BOT_TOKEN environment variable is not set');
     throw new Error('TELEGRAM_BOT_TOKEN not configured');
   }
   
   if (!env.TELEGRAM_CHAT_ID) {
-    console.error('TELEGRAM_CHAT_ID environment variable is not set');
     throw new Error('TELEGRAM_CHAT_ID not configured');
   }
   
   const telegramUrl = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-  console.log('Sending to Telegram URL:', telegramUrl.replace(env.TELEGRAM_BOT_TOKEN, '[HIDDEN]'));
   
   const payload = {
     chat_id: env.TELEGRAM_CHAT_ID,
@@ -275,11 +179,6 @@ async function sendToTelegram(message, env) {
     parse_mode: 'Markdown',
     disable_web_page_preview: true
   };
-  
-  console.log('Telegram payload:', JSON.stringify({
-    ...payload,
-    chat_id: '[HIDDEN]'
-  }, null, 2));
   
   return fetch(telegramUrl, {
     method: 'POST',
